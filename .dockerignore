@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+.env
+.venv
+venv/
+dist/
+build/
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# bom (mantém a pasta, ignora o build e .exe)
+*.exe
+llama.cpp/build/
+
