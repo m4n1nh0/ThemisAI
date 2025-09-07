@@ -1,6 +1,7 @@
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
@@ -29,7 +30,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS (restrinja em PROD)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,7 +39,16 @@ app.add_middleware(
 )
 
 
-# Healthcheck simples
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    inicio = time.time()
+    resposta = await call_next(request)
+    fim = time.time()
+    duracao = fim - inicio
+    resposta.headers["X-Process-Time"] = str(duracao)
+    return resposta
+
+
 @app.get("/health", tags=["health"])
 def health():
     return {"status": "ok"}

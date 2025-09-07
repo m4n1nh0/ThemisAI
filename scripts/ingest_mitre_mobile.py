@@ -252,6 +252,7 @@ def technique_doc(
         "tactics": phases,
         "data_sources": dsrc,
         "urls": urls,
+        "url": urls[0] if urls else None,
         "has_detection": bool(detect),
         "mitigations": mitigations_list,
         "used_by": used_by_list,
@@ -299,6 +300,7 @@ def mitigation_doc(mit: dict, techniques_by_rel: Dict[str, List[dict]]) -> Dict[
         "stix_id": mit_id,
         "name": name,
         "urls": urls,
+        "url": urls[0] if urls else None,
         "mitigates_count": len(techs),
     }
     return {"id": attack_id, "text": text, "metadata": metadata}

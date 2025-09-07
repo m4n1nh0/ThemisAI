@@ -6,15 +6,17 @@ Recursos:
 - Criação idempotente de índice com KNN (FAISS/HNSW).
 - Indexação em lote (bulk) para performance.
 - Busca KNN (hits brutos) e "slim" (id, score, text, meta).
+- Busca híbrida opcional (BM25 + KNN) com RRF.
 - Dimensão do embedding inferida do modelo Sentence-Transformers.
 
-Compatível com docker-compose:
-  OPENSEARCH_HOST=http://opensearch:9200
+Compatível com docker-compose (ex.):
+  OPENSEARCH_HOST=http://opensearch-node1:9200
 """
 
 from __future__ import annotations
-from typing import List, Dict, Any, Iterable, Optional
+
 from itertools import islice
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from requests.auth import HTTPBasicAuth
@@ -44,12 +46,14 @@ class OpenSearchService:
         timeout = timeout or settings.OPENSEARCH_TIMEOUT
         embed_model_name = embed_model_name or settings.EMBED_MODEL_NAME
 
-        http_auth = HTTPBasicAuth(user, password) if user and password else None
+        use_ssl = str(host).startswith("https")
+        http_auth = HTTPBasicAuth(user, password) if (user and password) else None
         self.client = OpenSearch(
             hosts=[host],
             http_auth=http_auth,
-            use_ssl=str(host).startswith("https"),
-            verify_certs=False,
+            use_ssl=use_ssl,
+            verify_certs=False if use_ssl else False,
+            ssl_show_warn=False,
             connection_class=RequestsHttpConnection,
             timeout=timeout,
             max_retries=3,
@@ -59,7 +63,6 @@ class OpenSearchService:
         self.embedding_model = SentenceTransformer(embed_model_name)
         self.embedding_dim = int(self.embedding_model.get_sentence_embedding_dimension())
 
-        # ---- Garante índice ----
         self.ensure_index()
 
     def ensure_index(self) -> None:
@@ -86,8 +89,8 @@ class OpenSearchService:
                         "dimension": self.embedding_dim,
                         "method": {
                             "name": "hnsw",
-                            "space_type": settings.KNN_SPACE,
-                            "engine": settings.KNN_ENGINE,
+                            "space_type": settings.KNN_SPACE,   # ex.: "l2" ou "cosinesimil"
+                            "engine": settings.KNN_ENGINE,      # ex.: "faiss"
                         },
                     },
                 }
@@ -96,15 +99,11 @@ class OpenSearchService:
         self.client.indices.create(index=self.index, body=body)
 
     def _ensure_index(self) -> None:
-        """Alias para ensure_index()."""
         self.ensure_index()
 
     def index_texts(self, texts: List[str]) -> Dict[str, Any]:
         """
         Indexa uma lista simples de textos (gera embeddings automaticamente).
-
-        - `texts`: lista de strings
-        - return: {"ok": True, "indexed": <qtd>}
         """
         docs = [{"text": t, "metadata": {}} for t in texts if (t or "").strip()]
         return self.index_docs(docs)
@@ -172,6 +171,24 @@ class OpenSearchService:
         res = self.client.search(index=self.index, body=body)
         return res.get("hits", {}).get("hits", [])
 
+    def _bm25_search(self, query: str, size: int = 10) -> List[Dict[str, Any]]:
+        """
+        Busca lexical (BM25) simples em 'text'.
+        """
+        body = {
+            "size": size,
+            "_source": True,
+            "query": {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["text"],
+                    "type": "most_fields",
+                }
+            },
+        }
+        res = self.client.search(index=self.index, body=body)
+        return res.get("hits", {}).get("hits", [])
+
     def search_knn_slim(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         Versão “enxuta” dos resultados de KNN:
@@ -187,6 +204,49 @@ class OpenSearchService:
             }
             for h in hits
         ]
+
+    def search_hybrid_slim(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Fusão simples (RRF) entre KNN e BM25. Retorna no formato “slim”.
+        """
+        k = max(5, top_k)
+        knn_hits = self.search_knn(query, top_k=k)
+        bm25_hits = self._bm25_search(query, size=k)
+
+        def to_rank_map(hits: List[Dict[str, Any]]) -> Dict[str, int]:
+            m = {}
+            for i, h in enumerate(hits, start=1):
+                _id = h.get("_id")
+                if _id:
+                    m[_id] = i
+            return m
+
+        r_knn = to_rank_map(knn_hits)
+        r_bm25 = to_rank_map(bm25_hits)
+
+        K = 60.0
+        ids = set(r_knn) | set(r_bm25)
+        fused: List[Tuple[str, float]] = []
+        for _id in ids:
+            score = 0.0
+            if _id in r_knn:
+                score += 1.0 / (K + r_knn[_id])
+            if _id in r_bm25:
+                score += 1.0 / (K + r_bm25[_id])
+            fused.append((_id, score))
+        fused.sort(key=lambda x: x[1], reverse=True)
+
+        src_by_id = {h.get("_id"): h.get("_source", {}) for h in (knn_hits + bm25_hits)}
+        out = []
+        for _id, score in fused[:top_k]:
+            src = src_by_id.get(_id, {})
+            out.append({
+                "id": _id,
+                "score": float(score),
+                "text": src.get("text", ""),
+                "meta": src.get("metadata", {}),
+            })
+        return out
 
 
 def get_opensearch_service() -> OpenSearchService:

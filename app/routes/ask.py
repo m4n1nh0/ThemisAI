@@ -11,7 +11,8 @@ Protegido por Bearer Token (HTTP Authorization).
 """
 
 from __future__ import annotations
-from typing import List
+
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -27,17 +28,30 @@ router = APIRouter(prefix="/ask", tags=["ask"])
 class AskRequest(BaseModel):
     """
     Payload de pergunta ao sistema RAG.
+
+    Campos:
+      - question: pergunta do usuário
+      - top_k: quantos trechos recuperar
+      - max_tokens: (LEGADO) se enviado, será usado como fallback para answer_max_tokens
+      - answer_max_tokens: limite de tokens da RESPOSTA (recomendado)
+      - style: preset de estilo ("paragraph"|"audit-bullets"|"json-compact"|"qa-strict")
+      - search_mode: "knn" (padrão) ou "hybrid" se seu retriever suportar
+      - max_context_chars: limite de caracteres agregados do CONTEXTO (trechos)
     """
     question: str = Field(..., min_length=2)
     top_k: int = 3
-    max_tokens: int = 200
+    max_tokens: Optional[int] = None
+    answer_max_tokens: Optional[int] = None
+    style: Optional[str] = None
+    search_mode: Optional[str] = None
+    max_context_chars: int = 16000
 
 
 class ApiCitation(BaseModel):
-    id: str | None = None
-    score: float | None = None
+    id: Optional[str] = None
+    score: Optional[float] = None
     text: str
-    meta: dict | None = None
+    meta: Optional[dict] = None
 
 
 class AskResponse(BaseModel):
@@ -58,13 +72,17 @@ async def ask_question(
     domain: RagDomain = Depends(get_rag_domain),
 ):
     try:
-        rag_resp: RagResponse = await domain.ask(
-            RagRequest(
-                question=req.question,
-                top_k=req.top_k,
-                max_tokens=req.max_tokens,
-            )
+        rag_req = RagRequest(
+            question=req.question,
+            top_k=req.top_k,
+            max_tokens=req.max_tokens,                    # compat
+            answer_max_tokens=req.answer_max_tokens,      # recomendado
+            style=req.style,
+            search_mode=req.search_mode,
+            max_context_chars=req.max_context_chars,
         )
+        rag_resp: RagResponse = await domain.ask(rag_req)
+
         return AskResponse(
             answer=rag_resp.answer,
             citations=[ApiCitation(**c.__dict__) for c in rag_resp.citations],

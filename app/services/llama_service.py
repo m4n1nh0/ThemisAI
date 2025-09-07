@@ -192,7 +192,6 @@ class LlamaService:
         if not os.path.isfile(self.model_path):
             raise RuntimeError(f"Modelo não encontrado: {self.model_path}")
 
-        # tentativa 1: modo preferido pelo executável atual
         initial_flag = not self._prefer_positional
         cmd = self._build_command(prompt, max_tokens, use_prompt_flag=initial_flag, extra_args=extra_args)
         try:
@@ -202,7 +201,6 @@ class LlamaService:
         except asyncio.TimeoutError:
             raise RuntimeError(f"LLaMA timeout.\ncmd: {shlex.join(cmd)}")
 
-        # fallback: modo inverso
         fallback_flag = not initial_flag
         fallback_cmd = self._build_command(prompt, max_tokens, use_prompt_flag=fallback_flag, extra_args=extra_args)
         try:

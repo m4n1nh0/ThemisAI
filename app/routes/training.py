@@ -5,6 +5,7 @@ Rotas de treinamento/ingestão de conhecimento no OpenSearch.
 - Suporta:
   1) texts: Lista simples de strings.
   2) docs: Lista de objetos {id?, text, metadata?} com chunking configurável.
+- Preserva metadados legíveis no chunking para “Fonte” nos prompts.
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ async def train(
     - Aceita 'texts' simples OU 'docs' com metadata e chunking.
     - Retorna contagem de itens recebidos e indexados.
     """
-    has_texts = bool(req.texts and any(t.strip() for t in req.texts))
+    has_texts = bool(req.texts and any((t or "").strip() for t in req.texts))
     has_docs = bool(req.docs)
 
     if not has_texts and not has_docs:
@@ -78,7 +79,6 @@ async def train(
                 continue
             to_index.append({"text": t, "metadata": {}})
 
-    # 2) Ingestão com docs + chunking
     if has_docs:
         step = max(req.chunk_size - req.chunk_overlap, 1)
         for d in req.docs or []:
@@ -86,22 +86,42 @@ async def train(
             if not text:
                 continue
 
-            meta = d.metadata or {}
+            base_meta = d.metadata or {}
+            source_id = base_meta.get("attack_id") or d.id
+            source_name = base_meta.get("name")
+            first_url = base_meta.get("url") or (base_meta.get("urls") or [None])[0]
+
             if len(text) <= req.chunk_size:
+                meta = {
+                    **base_meta,
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "url": first_url,
+                    "chunk_of": d.id or source_id,
+                    "chunk_index": 0,
+                    "is_chunk": False,
+                }
                 to_index.append({"id": d.id, "text": text, "metadata": meta})
                 continue
 
-            # Quebra o texto em pedaços com overlap
             part = 0
             for i in range(0, len(text), step):
-                chunk = text[i : i + req.chunk_size]
+                chunk = text[i: i + req.chunk_size]
                 if not chunk:
                     continue
-                chunk_id = f"{d.id or 'doc'}::{part}"
+                chunk_id = f"{d.id or source_id}::{part}"
+                meta = {
+                    **base_meta,
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "url": first_url,
+                    "chunk_of": d.id or source_id,
+                    "chunk_index": part,
+                    "is_chunk": True,
+                }
                 to_index.append({"id": chunk_id, "text": chunk, "metadata": meta})
                 part += 1
 
-    # 3) Indexação (bulk) via serviço
     try:
         res = osvc.index_docs(to_index)
         return {
